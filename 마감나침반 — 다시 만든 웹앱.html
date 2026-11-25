@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>마감나침반</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: #f1f5f9; color: #17233a;
+      font: 16px/1.5 system-ui, sans-serif;
+    }
+    main { max-width: 1000px; margin: auto; padding: 24px 14px; }
+    header { margin-bottom: 20px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 2rem; }
+    header p, .empty, .course, .deadline { color: #475569; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 16px; align-items: start; }
+    .lists, form { display: grid; gap: 12px; min-width: 0; }
+    .panel { min-width: 0; padding: 16px; border: 1px solid #dbe3ee; border-radius: 14px; background: white; }
+    h2 { font-size: 1.2rem; margin-bottom: 12px; }
+    label { display: grid; gap: 4px; font-weight: 600; }
+    input, button { font: inherit; min-height: 44px; border-radius: 8px; }
+    input { width: 100%; min-width: 0; padding: 8px; border: 1px solid #8493a8; color: inherit; background: white; }
+    button { cursor: pointer; padding: 7px 12px; border: 1px solid #9baabd; color: #17233a; background: white; }
+    .primary { border-color: #1745a0; background: #1745a0; color: white; }
+    :focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+    ul { padding: 0; margin: 0; display: grid; gap: 8px; list-style: none; }
+    li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 10px; border: 1px solid #dbe3ee; border-radius: 10px; }
+    li h3 { font-size: 1rem; }
+    .details { min-width: 0; overflow-wrap: anywhere; }
+    .deadline, .course { font-size: .875rem; }
+    .urgent { font-weight: 700; color: #a1281e; }
+    .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    #storage-note { padding: 8px; margin-bottom: 12px; border-radius: 8px; background: #fff2cf; }
+    #form-error, #app-startup { color: #a1281e; }
+    #status { margin-bottom: 12px; color: #1745a0; }
+    #status:empty { margin: 0; }
+    [hidden] { display: none !important; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    @media (max-width: 740px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+    @media (max-width: 600px) { li { grid-template-columns: minmax(0, 1fr); } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>마감나침반</h1>
+    <p>다가오는 과제 마감일을 한눈에 확인하세요.</p>
+  </header>
+  <p id="app-startup" role="status">웹앱이 시작되지 않았습니다. 이 문구가 계속 보이면 현재 미리보기에서 스크립트를 실행하지 못한 상태입니다. 전체 코드를 HTML 파일로 저장한 뒤 브라우저에서 열어 주세요.</p>
+  <p id="storage-note" role="status" hidden></p>
+  <p id="status" role="status"></p>
+  <div class="layout">
+    <section class="panel" aria-labelledby="form-title">
+      <h2 id="form-title">과제 등록</h2>
+      <form id="task-form" novalidate>
+        <label>과목명
+          <input id="course" type="text" maxlength="80" required>
+        </label>
+        <label>과제 이름
+          <input id="task-name" type="text" maxlength="160" required>
+        </label>
+        <label>마감일
+          <input id="due" type="date" min="1900-01-01" max="2100-12-31" required>
+        </label>
+        <p id="form-error" role="alert" hidden></p>
+        <div class="actions">
+          <button class="primary" id="save-task" type="submit" disabled>과제 등록</button>
+          <button id="cancel" type="button" hidden>수정 취소</button>
+        </div>
+      </form>
+    </section>
+    <div class="lists">
+      <section class="panel" aria-labelledby="pending-title">
+        <h2 id="pending-title">미완료 과제</h2>
+        <p class="empty" id="pending-empty">미완료 과제가 없습니다.</p>
+        <ul id="pending"></ul>
+      </section>
+      <section class="panel" aria-labelledby="done-title">
+        <h2 id="done-title">완료한 과제</h2>
+        <p class="empty" id="done-empty">완료한 과제가 없습니다.</p>
+        <ul id="done"></ul>
+      </section>
+    </div>
+  </div>
+</main>
+<script>
+  'use strict';
+
+  const key = 'deadline-compass-tasks-v2';
+  const get = id => document.getElementById(id);
+  const form = get('task-form');
+  const course = get('course');
+  const taskName = get('task-name');
+  const due = get('due');
+  const saveTask = get('save-task');
+  let editing = null;
+  let tasks = [];
+
+  function storageWarning(message) {
+    get('storage-note').textContent = message;
+    get('storage-note').hidden = false;
+  }
+
+  function dayNumber(date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return NaN;
+    const [year, month, day] = date.split('-').map(Number);
+    if (year < 1900 || year > 2100) return NaN;
+    const stamp = Date.UTC(year, month - 1, day);
+    return new Date(stamp).toISOString().slice(0, 10) === date ? stamp / 86400000 : NaN;
+  }
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!Array.isArray(saved)) throw new Error();
+    tasks = saved.filter(item => item && typeof item.id === 'string' &&
+      typeof item.course === 'string' && typeof item.name === 'string' &&
+      typeof item.due === 'string' && Number.isFinite(dayNumber(item.due)) &&
+      typeof item.done === 'boolean');
+  } catch {
+    storageWarning('저장된 목록을 불러올 수 없습니다. 이 화면에서 새 과제를 등록할 수 있습니다.');
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(key, JSON.stringify(tasks));
+      get('storage-note').hidden = true;
+    } catch {
+      storageWarning('이 브라우저에서는 과제를 저장할 수 없습니다. 화면을 닫거나 새로고침하면 변경 내용이 사라질 수 있습니다.');
+    }
+  }
+
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function action(label, name, run) {
+    const button = element('button', label);
+    button.type = 'button';
+    button.setAttribute('aria-label', name + ' ' + label);
+    button.addEventListener('click', run);
+    return button;
+  }
+
+  function resetForm() {
+    editing = null;
+    form.reset();
+    clearFormError();
+    get('form-title').textContent = '과제 등록';
+    saveTask.textContent = '과제 등록';
+    get('cancel').hidden = true;
+  }
+
+  function edit(task) {
+    editing = task.id;
+    clearFormError();
+    course.value = task.course;
+    taskName.value = task.name;
+    due.value = task.due;
+    get('form-title').textContent = '과제 수정';
+    saveTask.textContent = '수정 저장';
+    get('cancel').hidden = false;
+    course.focus();
+  }
+
+  function render() {
+    const pending = get('pending');
+    const done = get('done');
+    pending.textContent = '';
+    done.textContent = '';
+    const now = new Date();
+    const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86400000;
+
+    [...tasks].sort((a, b) => a.due.localeCompare(b.due)).forEach(task => {
+      const days = dayNumber(task.due) - today;
+      const remaining = task.done ? '완료' : days === 0 ? '오늘 마감' :
+        days < 0 ? '기한 지남 (' + Math.abs(days) + '일)' : 'D-' + days;
+      const row = document.createElement('li');
+      const details = element('div', '', 'details');
+      details.append(element('p', task.course, 'course'), element('h3', task.name),
+        element('p', task.due + ' · ' + remaining, !task.done && days <= 0 ? 'deadline urgent' : 'deadline'));
+
+      const actions = element('div', '', 'actions');
+      const editButton = action('수정', task.name, () => edit(task));
+      const toggleButton = action(task.done ? '완료 취소' : '완료', task.name, () => {
+        task.done = !task.done;
+        save();
+        render();
+        document.getElementById('toggle-' + task.id)?.focus();
+        get('status').textContent = task.name + (task.done ? ': 완료 처리했습니다.' : ': 완료를 취소했습니다.');
+      });
+      toggleButton.id = 'toggle-' + task.id;
+      actions.append(editButton, toggleButton);
+      row.append(details, actions);
+      (task.done ? done : pending).append(row);
+    });
+
+    get('pending-empty').hidden = pending.childElementCount > 0;
+    get('done-empty').hidden = done.childElementCount > 0;
+  }
+
+  function clearFormError() {
+    get('form-error').hidden = true;
+    get('form-error').textContent = '';
+    [course, taskName, due].forEach(input => input.removeAttribute('aria-invalid'));
+  }
+
+  function showFormError(input, message) {
+    const error = get('form-error');
+    error.hidden = false;
+    error.textContent = message;
+    input.setAttribute('aria-invalid', 'true');
+    input.focus();
+  }
+
+  [course, taskName, due].forEach(input => {
+    input.addEventListener('input', clearFormError);
+    input.addEventListener('change', clearFormError);
+  });
+
+  function commitTask() {
+    clearFormError();
+    get('status').textContent = '';
+    const values = { course: course.value.trim(), name: taskName.value.trim(), due: due.value };
+    if (!values.course) return showFormError(course, '과목명을 입력해 주세요.');
+    if (!values.name) return showFormError(taskName, '과제 이름을 입력해 주세요.');
+    if (!Number.isFinite(dayNumber(values.due))) {
+      return showFormError(due, '마감일을 선택해 주세요. 선택할 수 있는 범위는 1900년부터 2100년까지입니다.');
+    }
+
+    const existing = tasks.find(task => task.id === editing);
+    if (existing) {
+      Object.assign(existing, values);
+    } else {
+      const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+      tasks.push({ id, ...values, done: false });
+    }
+
+    save();
+    resetForm();
+    render();
+    get('status').textContent = existing ? '과제를 수정했습니다.' : '과제를 등록했습니다.';
+    course.focus();
+  }
+
+  // 미리보기가 폼 제출을 제한해도 버튼 클릭만으로 등록할 수 있다.
+  saveTask.addEventListener('click', event => {
+    event.preventDefault();
+    commitTask();
+  });
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    commitTask();
+  });
+
+  get('cancel').addEventListener('click', () => {
+    resetForm();
+    course.focus();
+  });
+
+  try {
+    render();
+    saveTask.disabled = false;
+    get('app-startup').hidden = true;
+  } catch (error) {
+    get('app-startup').textContent = '웹앱을 초기화하는 중 오류가 발생했습니다. 페이지를 새로고침해 주세요.';
+    console.error('마감나침반 초기화 오류:', error);
+  }
+</script>
+</body>
+</html>
